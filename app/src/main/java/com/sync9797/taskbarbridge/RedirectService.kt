@@ -10,6 +10,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 
 /**
  * Keeps One UI Home as the system default (so Samsung's taskbar stays alive) and
@@ -120,9 +121,12 @@ class RedirectService : AccessibilityService() {
                 if (!polling) return
                 val elapsed = SystemClock.elapsedRealtime() - pollStartedAt
                 val active = try { rootInActiveWindow?.packageName?.toString() } catch (_: Exception) { null }
-                if (diag) log("settle t=${elapsed}ms active=$active")
+                // During the swipe the previous app's window is still on screen (being animated).
+                // The gesture is over once no other app window is visible.
+                val others = otherAppWindows()
+                if (diag) log("settle t=${elapsed}ms active=$active others=$others")
 
-                if (active == SAMSUNG_HOME) stableCount++ else stableCount = 0
+                if (active == SAMSUNG_HOME && others.isEmpty()) stableCount++ else stableCount = 0
                 when {
                     stableCount >= SETTLE_STABLE_POLLS -> {
                         stopPoll()
@@ -136,9 +140,15 @@ class RedirectService : AccessibilityService() {
                         }
                     }
                     elapsed > SETTLE_TIMEOUT_MS -> {
-                        // Gesture was cancelled or the user stayed in the app: do nothing.
                         stopPoll()
-                        if (diag) log("skip: home never settled (active=$active)")
+                        if (active == SAMSUNG_HOME) {
+                            // Home is up but something (e.g. a pop-up window) stays visible: redirect anyway.
+                            if (diag) log("settle timeout with home active (others=$others): redirecting")
+                            maybeRedirect(target, displayId, eventTime)
+                        } else if (diag) {
+                            // Gesture was cancelled or the user stayed in the app: do nothing.
+                            log("skip: home never settled (active=$active)")
+                        }
                     }
                     else -> handler.postDelayed(this, SETTLE_POLL_MS)
                 }
@@ -146,6 +156,16 @@ class RedirectService : AccessibilityService() {
         }
         pending = tick
         handler.post(tick)
+    }
+
+    /** Packages of visible app windows other than One UI Home (unknown windows are ignored). */
+    private fun otherAppWindows(): List<String> = try {
+        windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            .mapNotNull { w -> w.root?.packageName?.toString() }
+            .filter { it != SAMSUNG_HOME }
+            .distinct()
+    } catch (_: Exception) {
+        emptyList()
     }
 
     private fun isHomeClass(cls: String) =
