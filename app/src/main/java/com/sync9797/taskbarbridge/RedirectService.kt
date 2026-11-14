@@ -35,6 +35,11 @@ class RedirectService : AccessibilityService() {
         private const val SETTLE_STABLE_POLLS = 2
         private const val SETTLE_TIMEOUT_MS = 4_000L
 
+        // Bounce recovery.
+        private const val BOUNCE_POLL_MS = 50L
+        private const val BOUNCE_WATCH_MS = 2_000L
+        private const val BOUNCE_MAX_RETRIES = 2
+
         /** One UI fires a second home event right after we redirect; ignore it. */
         private const val COOLDOWN_MS = 900L
 
@@ -78,6 +83,7 @@ class RedirectService : AccessibilityService() {
         if (cls.contains(RECENTS_HINT)) {
             // Recents: leave it alone and cancel any queued redirect.
             stopPoll()
+            stopWatch()
             if (diag) log("skip: Recents ($cls)")
             return
         }
@@ -104,6 +110,9 @@ class RedirectService : AccessibilityService() {
     private var polling = false
     private var pollStartedAt = 0L
     private var stableCount = 0
+    /** App(s) that were on screen during the swipe: if one of these comes back, we bounced. */
+    private var previousApps: List<String> = emptyList()
+    private var watch: Runnable? = null
 
     private fun stopPoll() {
         polling = false
@@ -115,6 +124,8 @@ class RedirectService : AccessibilityService() {
         polling = true
         pollStartedAt = SystemClock.elapsedRealtime()
         stableCount = 0
+        previousApps = emptyList()
+        stopWatch()
         val diag = Prefs.diagnostics(this)
         val tick = object : Runnable {
             override fun run() {
@@ -125,6 +136,7 @@ class RedirectService : AccessibilityService() {
                 // The gesture is over once no other app window is visible.
                 val others = otherAppWindows()
                 if (diag) log("settle t=${elapsed}ms active=$active others=$others")
+                if (others.isNotEmpty()) previousApps = others
 
                 if (active == SAMSUNG_HOME && others.isEmpty()) stableCount++ else stableCount = 0
                 when {
@@ -158,6 +170,62 @@ class RedirectService : AccessibilityService() {
         handler.post(tick)
     }
 
+    private fun stopWatch() {
+        watch?.let(handler::removeCallbacks)
+        watch = null
+    }
+
+    /**
+     * One UI is sometimes still finishing the swipe-home transition when home already looks
+     * settled. Launching then makes Android cancel the transition and restore the previous app.
+     * Watch for that and relaunch the target once the restore is done.
+     */
+    private fun watchForBounce(target: ComponentName, displayId: Int, previous: List<String>, attempt: Int) {
+        stopWatch()
+        if (previous.isEmpty()) return
+        val diag = Prefs.diagnostics(this)
+        val startedAt = SystemClock.elapsedRealtime()
+        var onTarget = 0
+        val r = object : Runnable {
+            override fun run() {
+                val t = SystemClock.elapsedRealtime() - startedAt
+                val active = try { rootInActiveWindow?.packageName?.toString() } catch (_: Exception) { null }
+                when {
+                    active == target.packageName -> {
+                        onTarget++
+                        if (onTarget >= 4) {
+                            if (diag) log("landed on ${target.packageName} after ${t}ms")
+                            watch = null
+                            return
+                        }
+                    }
+                    active != null && active in previous -> {
+                        onTarget = 0
+                        watch = null
+                        if (attempt > BOUNCE_MAX_RETRIES) {
+                            log("bounced back to $active again; giving up")
+                            return
+                        }
+                        log("bounced back to $active after ${t}ms -> retry #$attempt")
+                        lastRedirectAt = SystemClock.elapsedRealtime()
+                        launch(target, displayId, -1)
+                        watchForBounce(target, displayId, previous, attempt + 1)
+                        return
+                    }
+                    else -> onTarget = 0
+                }
+                if (t > BOUNCE_WATCH_MS) {
+                    if (diag) log("bounce watch ended (active=$active)")
+                    watch = null
+                    return
+                }
+                handler.postDelayed(this, BOUNCE_POLL_MS)
+            }
+        }
+        watch = r
+        handler.postDelayed(r, BOUNCE_POLL_MS)
+    }
+
     /** Packages of visible app windows other than One UI Home (unknown windows are ignored). */
     private fun otherAppWindows(): List<String> = try {
         windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
@@ -189,6 +257,7 @@ class RedirectService : AccessibilityService() {
         launchTimes.addLast(now)
         lastRedirectAt = now
         launch(target, displayId, SystemClock.uptimeMillis() - eventTime)
+        watchForBounce(target, displayId, previousApps, attempt = 1)
 
         if (Prefs.diagnostics(this)) {
             // Logged after launching so it never slows the redirect down.
@@ -205,7 +274,8 @@ class RedirectService : AccessibilityService() {
         if (displayId >= 0) opts.launchDisplayId = displayId
         try {
             startActivity(intent, opts.toBundle())
-            log("redirected to ${target.packageName} (display $displayId, ${latencyMs} ms after event)")
+            log(if (latencyMs >= 0) "redirected to ${target.packageName} (display $displayId, ${latencyMs} ms after event)"
+                else "relaunched ${target.packageName}")
         } catch (e: Exception) {
             log("launch failed: ${e.javaClass.simpleName}: ${e.message}")
         }
