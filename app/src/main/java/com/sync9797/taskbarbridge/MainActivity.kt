@@ -50,10 +50,10 @@ class MainActivity : AppCompatActivity() {
         val delayLabel = findViewById<TextView>(R.id.delay_label)
         findViewById<SeekBar>(R.id.delay).apply {
             progress = Prefs.delayMs(this@MainActivity).toInt()
-            delayLabel.text = "Redirect delay: $progress ms"
+            delayLabel.text = "Extra delay after the swipe finishes: $progress ms"
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
-                    delayLabel.text = "Redirect delay: $p ms"
+                    delayLabel.text = "Extra delay after the swipe finishes: $p ms"
                     if (fromUser) Prefs.setDelayMs(this@MainActivity, p.toLong())
                 }
                 override fun onStartTrackingTouch(sb: SeekBar) = Unit

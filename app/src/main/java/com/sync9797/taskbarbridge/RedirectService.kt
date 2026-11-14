@@ -29,6 +29,11 @@ class RedirectService : AccessibilityService() {
         private val HOME_CLASS_FALLBACKS = listOf(".LauncherActivity", ".activities.LauncherActivity")
         private const val RECENTS_HINT = "Recents"
 
+        // Settle detection: poll the active window until One UI Home owns it.
+        private const val SETTLE_POLL_MS = 40L
+        private const val SETTLE_STABLE_POLLS = 2
+        private const val SETTLE_TIMEOUT_MS = 4_000L
+
         /** One UI fires a second home event right after we redirect; ignore it. */
         private const val COOLDOWN_MS = 900L
 
@@ -71,7 +76,7 @@ class RedirectService : AccessibilityService() {
 
         if (cls.contains(RECENTS_HINT)) {
             // Recents: leave it alone and cancel any queued redirect.
-            pending?.let(handler::removeCallbacks)
+            stopPoll()
             if (diag) log("skip: Recents ($cls)")
             return
         }
@@ -88,15 +93,59 @@ class RedirectService : AccessibilityService() {
             return
         }
 
+        // Don't redirect yet: during the swipe-home gesture One UI already shows its home window,
+        // and launching an activity mid-gesture cancels the gesture and bounces back to the app.
+        // Wait until One UI Home actually owns the active window (gesture finished).
+        if (polling) return
+        startSettlePoll(target, displayId, event.eventTime)
+    }
+
+    private var polling = false
+    private var pollStartedAt = 0L
+    private var stableCount = 0
+
+    private fun stopPoll() {
+        polling = false
         pending?.let(handler::removeCallbacks)
-        val delay = Prefs.delayMs(this)
-        if (delay <= 0L) {
-            maybeRedirect(target, displayId, event.eventTime)
-        } else {
-            val task = Runnable { maybeRedirect(target, displayId, event.eventTime) }
-            pending = task
-            handler.postDelayed(task, delay)
+        pending = null
+    }
+
+    private fun startSettlePoll(target: ComponentName, displayId: Int, eventTime: Long) {
+        polling = true
+        pollStartedAt = SystemClock.elapsedRealtime()
+        stableCount = 0
+        val diag = Prefs.diagnostics(this)
+        val tick = object : Runnable {
+            override fun run() {
+                if (!polling) return
+                val elapsed = SystemClock.elapsedRealtime() - pollStartedAt
+                val active = try { rootInActiveWindow?.packageName?.toString() } catch (_: Exception) { null }
+                if (diag) log("settle t=${elapsed}ms active=$active")
+
+                if (active == SAMSUNG_HOME) stableCount++ else stableCount = 0
+                when {
+                    stableCount >= SETTLE_STABLE_POLLS -> {
+                        stopPoll()
+                        val extra = Prefs.delayMs(this@RedirectService)
+                        if (extra <= 0L) {
+                            maybeRedirect(target, displayId, eventTime)
+                        } else {
+                            val r = Runnable { maybeRedirect(target, displayId, eventTime) }
+                            pending = r
+                            handler.postDelayed(r, extra)
+                        }
+                    }
+                    elapsed > SETTLE_TIMEOUT_MS -> {
+                        // Gesture was cancelled or the user stayed in the app: do nothing.
+                        stopPoll()
+                        if (diag) log("skip: home never settled (active=$active)")
+                    }
+                    else -> handler.postDelayed(this, SETTLE_POLL_MS)
+                }
+            }
         }
+        pending = tick
+        handler.post(tick)
     }
 
     private fun isHomeClass(cls: String) =
