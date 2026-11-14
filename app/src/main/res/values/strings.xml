@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">TaskbarBridge</string>
+    <string name="service_label">TaskbarBridge home redirect</string>
+    <string name="service_description">Watches for the One UI home screen and opens your chosen launcher instead, so Samsung\'s taskbar keeps working. It only reads window events from One UI Home.</string>
+</resources>
