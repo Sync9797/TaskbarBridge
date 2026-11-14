@@ -220,17 +220,36 @@ class MainActivity : AppCompatActivity() {
         Prefs.setEnabled(this, false)
         findViewById<SwitchCompat>(R.id.enabled).isChecked = false
         val cmd = """
-            settings put global task_bar 1
-            settings put global sem_task_bar_available 1
-            settings put system settings_task_bar_enabled 1
+            show() { dumpsys settings 2>/dev/null | grep -E "name:(sem_task_bar_available|task_bar|settings_task_bar_enabled) " | sed -E 's/^ *//'; }
             cmd package set-home-activity --user 0 ${target.flattenToString()}
-            echo "task_bar=${'$'}(settings get global task_bar) available=${'$'}(settings get global sem_task_bar_available) enabled=${'$'}(settings get system settings_task_bar_enabled)"
             cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME | tail -1
+            sleep 2
+            echo "--- who last wrote the taskbar flags (after switching home):"
+            show
+            settings put global task_bar 1
+            settings put system settings_task_bar_enabled 1
+            settings put global sem_task_bar_available 1
+            # Nudge One UI Home to re-read the flag.
+            settings put global task_bar 0; sleep 0.3; settings put global task_bar 1
+            echo "--- forcing sem_task_bar_available=1 for 30s (open an app now)"
+            i=0
+            while [ ${'$'}i -lt 30 ]; do
+              v=${'$'}(settings get global sem_task_bar_available)
+              if [ "${'$'}v" != "1" ]; then
+                echo "t=${'$'}{i}s reset to ${'$'}v -> forcing 1"
+                settings put global sem_task_bar_available 1
+              fi
+              sleep 1
+              i=${'$'}((i+1))
+            done
+            echo "--- final:"
+            show
         """.trimIndent()
+        toast("Native test running 30s: open an app and pull up the taskbar")
         ShizukuShell.exec(cmd) { out ->
             DebugLog.add("native mode:\n$out")
             refresh()
-            toast("Native mode on. Open an app and look for the taskbar.")
+            toast("Native test finished. Copy the log.")
         }
     }
 
