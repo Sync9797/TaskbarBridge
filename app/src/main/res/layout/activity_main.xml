@@ -99,6 +99,12 @@
             android:text="Try native mode" />
 
         <Button
+            android:id="@+id/native_restart"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Native test 2: force flag + restart One UI Home" />
+
+        <Button
             android:id="@+id/native_restore"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

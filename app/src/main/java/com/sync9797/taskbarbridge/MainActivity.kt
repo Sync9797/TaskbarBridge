@@ -73,6 +73,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.probe).setOnClickListener { probe() }
         findViewById<Button>(R.id.native_try).setOnClickListener { tryNativeMode() }
         findViewById<Button>(R.id.native_restore).setOnClickListener { restoreSamsungHome() }
+        findViewById<Button>(R.id.native_restart).setOnClickListener { forceAndRestartHome() }
 
         findViewById<Button>(R.id.refresh_log).setOnClickListener { logView.text = DebugLog.dump() }
         findViewById<Button>(R.id.clear_log).setOnClickListener { DebugLog.clear(); logView.text = DebugLog.dump() }
@@ -250,6 +251,41 @@ class MainActivity : AppCompatActivity() {
             DebugLog.add("native mode:\n$out")
             refresh()
             toast("Native test finished. Copy the log.")
+        }
+    }
+
+    /**
+     * SystemUI writes sem_task_bar_available=0 when the default home changes, and One UI Home
+     * probably only reads it when its taskbar starts up. Force the flag, then restart One UI Home
+     * (SystemUI rebinds its Recents/taskbar service right away) so it re-reads the flag.
+     */
+    private fun forceAndRestartHome() {
+        if (!ShizukuShell.hasPermission()) return toast("Connect Shizuku first")
+        val cmd = """
+            show() { dumpsys settings 2>/dev/null | grep -E "name:sem_task_bar_available " | sed -E 's/^ *//'; }
+            echo "default home: ${'$'}(cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME | tail -1)"
+            settings put global sem_task_bar_available 1
+            settings put global task_bar 1
+            am force-stop ${RedirectService.SAMSUNG_HOME}
+            echo "--- One UI Home restarted; watching the flag for 20s (open an app now)"
+            i=0
+            while [ ${'$'}i -lt 20 ]; do
+              v=${'$'}(settings get global sem_task_bar_available)
+              if [ "${'$'}v" != "1" ]; then
+                echo "t=${'$'}{i}s reset to ${'$'}v -> forcing 1"
+                settings put global sem_task_bar_available 1
+              fi
+              sleep 1
+              i=${'$'}((i+1))
+            done
+            echo "One UI Home running: ${'$'}(pidof ${RedirectService.SAMSUNG_HOME} >/dev/null && echo yes || echo no)"
+            show
+        """.trimIndent()
+        toast("Restarting One UI Home: open an app and pull up the taskbar")
+        ShizukuShell.exec(cmd) { out ->
+            DebugLog.add("force + restart:\n$out")
+            refresh()
+            toast("Test finished. Copy the log.")
         }
     }
 
