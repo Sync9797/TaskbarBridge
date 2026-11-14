@@ -81,6 +81,30 @@
             android:text="Probe hidden taskbar settings" />
 
         <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Experiment: native mode"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Makes your launcher the real default home app and forces Samsung's taskbar flags on. Open an app afterwards: if the taskbar is still there, no redirect is needed. If not, tap Restore." />
+
+        <Button
+            android:id="@+id/native_try"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Try native mode" />
+
+        <Button
+            android:id="@+id/native_restore"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Restore One UI Home" />
+
+        <TextView
             android:textAppearance="?attr/textAppearanceTitleSmall"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -96,7 +120,7 @@
             android:id="@+id/delay"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:max="400" />
+            android:max="300" />
 
         <androidx.appcompat.widget.SwitchCompat
             android:id="@+id/diagnostics"

@@ -10,7 +10,7 @@ TaskbarBridge flips the problem around:
 
 1. **One UI Home stays the default home app**, so the taskbar, the swipe-up peek and Recents keep working exactly as Samsung built them.
 2. An accessibility service watches for the One UI home screen coming to the front and **immediately opens the launcher you picked**.
-3. It tries to tell the home screen apart from Recents, so the Recents screen isn't redirected.
+3. It tells the home screen (`com.sec.android.app.launcher.Launcher`) apart from Recents (`com.android.quickstep.RecentsActivity`) by window class alone, so redirects are fast and Recents is left alone.
 
 ## Setup
 
@@ -29,6 +29,10 @@ Tip: clear the One UI home screen and use the same wallpaper on both launchers t
 Turn on **Log One UI window events**, swipe home a few times and open Recents, then tap **Copy** and paste the log into an issue. That's how we tune Home vs Recents detection for each One UI version.
 
 **Probe hidden taskbar settings** (Shizuku) lists system settings that mention the taskbar, in case Samsung left a switch that turns it on for any launcher.
+
+## Native mode (experiment)
+
+With Shizuku, **Try native mode** sets your launcher as the real default home app and forces Samsung's taskbar flags (`global task_bar`, `global sem_task_bar_available`, `system settings_task_bar_enabled`). If the taskbar survives, no redirect is needed. **Restore One UI Home** undoes it.
 
 ## Roadmap
 

@@ -10,8 +10,9 @@ object Prefs {
     private const val KEY_TARGET = "target"
     private const val KEY_DELAY = "delay_ms"
     private const val KEY_DIAGNOSTICS = "diagnostics"
+    private const val KEY_SAMSUNG_HOME = "samsung_home"
 
-    const val DEFAULT_DELAY_MS = 60L
+    const val DEFAULT_DELAY_MS = 0L
 
     private fun sp(ctx: Context) = ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -30,4 +31,11 @@ object Prefs {
 
     fun diagnostics(ctx: Context) = sp(ctx).getBoolean(KEY_DIAGNOSTICS, false)
     fun setDiagnostics(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(KEY_DIAGNOSTICS, v).apply()
+
+    /** One UI Home's own home activity, remembered so native mode can be undone. */
+    fun samsungHome(ctx: Context): ComponentName? =
+        sp(ctx).getString(KEY_SAMSUNG_HOME, null)?.let(ComponentName::unflattenFromString)
+
+    fun setSamsungHome(ctx: Context, c: ComponentName) =
+        sp(ctx).edit().putString(KEY_SAMSUNG_HOME, c.flattenToString()).apply()
 }

@@ -71,6 +71,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.shizuku).setOnClickListener { connectShizuku() }
         findViewById<Button>(R.id.auto_enable).setOnClickListener { autoEnable() }
         findViewById<Button>(R.id.probe).setOnClickListener { probe() }
+        findViewById<Button>(R.id.native_try).setOnClickListener { tryNativeMode() }
+        findViewById<Button>(R.id.native_restore).setOnClickListener { restoreSamsungHome() }
 
         findViewById<Button>(R.id.refresh_log).setOnClickListener { logView.text = DebugLog.dump() }
         findViewById<Button>(R.id.clear_log).setOnClickListener { DebugLog.clear(); logView.text = DebugLog.dump() }
@@ -199,6 +201,52 @@ class MainActivity : AppCompatActivity() {
         ShizukuShell.exec(cmd) { out ->
             DebugLog.add("probe:\n$out")
             logView.text = DebugLog.dump()
+        }
+    }
+
+    private fun samsungHomeComponent(): ComponentName? {
+        Prefs.samsungHome(this)?.let { return it }
+        val info = packageManager.queryIntentActivities(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0
+        ).map { it.activityInfo }.firstOrNull { it.packageName == RedirectService.SAMSUNG_HOME } ?: return null
+        return ComponentName(info.packageName, info.name).also { Prefs.setSamsungHome(this, it) }
+    }
+
+    private fun tryNativeMode() {
+        if (!ShizukuShell.hasPermission()) return toast("Connect Shizuku first")
+        val target = Prefs.target(this) ?: return toast("Choose your launcher first")
+        if (samsungHomeComponent() == null) return toast("Couldn't find One UI Home")
+        // Pause the redirect so it doesn't fight the experiment.
+        Prefs.setEnabled(this, false)
+        findViewById<SwitchCompat>(R.id.enabled).isChecked = false
+        val cmd = """
+            settings put global task_bar 1
+            settings put global sem_task_bar_available 1
+            settings put system settings_task_bar_enabled 1
+            cmd package set-home-activity --user 0 ${target.flattenToString()}
+            echo "task_bar=${'$'}(settings get global task_bar) available=${'$'}(settings get global sem_task_bar_available) enabled=${'$'}(settings get system settings_task_bar_enabled)"
+            cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME | tail -1
+        """.trimIndent()
+        ShizukuShell.exec(cmd) { out ->
+            DebugLog.add("native mode:\n$out")
+            refresh()
+            toast("Native mode on. Open an app and look for the taskbar.")
+        }
+    }
+
+    private fun restoreSamsungHome() {
+        if (!ShizukuShell.hasPermission()) return toast("Connect Shizuku first")
+        val home = samsungHomeComponent() ?: return toast("Couldn't find One UI Home")
+        val cmd = """
+            cmd package set-home-activity --user 0 ${home.flattenToString()}
+            cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME | tail -1
+        """.trimIndent()
+        ShizukuShell.exec(cmd) { out ->
+            DebugLog.add("restore:\n$out")
+            Prefs.setEnabled(this, true)
+            findViewById<SwitchCompat>(R.id.enabled).isChecked = true
+            refresh()
+            toast("One UI Home restored, redirect back on")
         }
     }
 
