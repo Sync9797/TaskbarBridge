@@ -41,7 +41,11 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<SwitchCompat>(R.id.enabled).apply {
             isChecked = Prefs.enabled(this@MainActivity)
-            setOnCheckedChangeListener { _, v -> Prefs.setEnabled(this@MainActivity, v); refresh() }
+            setOnCheckedChangeListener { _, v ->
+                Prefs.setEnabled(this@MainActivity, v)
+                DebugLog.add(if (v) "redirect enabled" else "redirect paused")
+                refresh()
+            }
         }
         findViewById<SwitchCompat>(R.id.shizuku_detection).apply {
             isChecked = Prefs.shizukuDetection(this@MainActivity)

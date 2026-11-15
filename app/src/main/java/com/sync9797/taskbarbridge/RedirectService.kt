@@ -108,6 +108,7 @@ class RedirectService : AccessibilityService() {
     private var redirectedFrom: String? = null
     private var bounceUntil = 0L
     private var bounceAttempts = 0
+    private var lastSkipLogAt = 0L
 
     private val watcherCb = object : ITaskWatcher.Stub() {
         override fun onTopTask(taskId: Int, displayId: Int, topComponent: String, othersVisible: String) {
@@ -206,7 +207,14 @@ class RedirectService : AccessibilityService() {
             if (diag) log("waiting: $others still visible")
             return
         }
-        if (!Prefs.enabled(this) || target == null) return
+        if (!Prefs.enabled(this) || target == null) {
+            // Always logged (not only with diagnostics) so a paused redirect is obvious in reports.
+            if (now - lastSkipLogAt > 5_000) {
+                lastSkipLogAt = now
+                log(if (target == null) "home detected, but no launcher chosen" else "home detected, but redirect is paused")
+            }
+            return
+        }
         if (now - lastRedirectAt < COOLDOWN_MS) {
             if (diag) log("skip: cooldown")
             return
