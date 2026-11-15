@@ -26,6 +26,7 @@ class MainActivity : AppCompatActivity() {
     private val permissionListener = Shizuku.OnRequestPermissionResultListener { code, result ->
         if (code == ShizukuShell.PERMISSION_REQUEST) {
             toast(if (result == PackageManager.PERMISSION_GRANTED) "Shizuku connected" else "Shizuku permission denied")
+            RedirectService.instance?.reconfigure()
             refresh()
         }
     }
@@ -41,6 +42,15 @@ class MainActivity : AppCompatActivity() {
         findViewById<SwitchCompat>(R.id.enabled).apply {
             isChecked = Prefs.enabled(this@MainActivity)
             setOnCheckedChangeListener { _, v -> Prefs.setEnabled(this@MainActivity, v); refresh() }
+        }
+        findViewById<SwitchCompat>(R.id.shizuku_detection).apply {
+            isChecked = Prefs.shizukuDetection(this@MainActivity)
+            setOnCheckedChangeListener { _, v ->
+                Prefs.setShizukuDetection(this@MainActivity, v)
+                RedirectService.instance?.reconfigure()
+                // The watcher starts asynchronously; refresh once it has had a moment.
+                status.postDelayed({ refresh() }, 600)
+            }
         }
         findViewById<SwitchCompat>(R.id.diagnostics).apply {
             isChecked = Prefs.diagnostics(this@MainActivity)
@@ -73,7 +83,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.probe).setOnClickListener { probe() }
         findViewById<Button>(R.id.native_try).setOnClickListener { tryNativeMode() }
         findViewById<Button>(R.id.native_restore).setOnClickListener { restoreSamsungHome() }
-        findViewById<Button>(R.id.native_restart).setOnClickListener { forceAndRestartHome() }
+        findViewById<Button>(R.id.native_restart).setOnClickListener { rebindTest() }
+        findViewById<Button>(R.id.native_gesture).setOnClickListener { gestureCheck() }
 
         findViewById<Button>(R.id.refresh_log).setOnClickListener { logView.text = DebugLog.dump() }
         findViewById<Button>(R.id.clear_log).setOnClickListener { DebugLog.clear(); logView.text = DebugLog.dump() }
@@ -114,7 +125,13 @@ class MainActivity : AppCompatActivity() {
                 if (isServiceEnabled()) "on" else "off")
             appendLine("${mark(Prefs.enabled(this@MainActivity))} Redirect: " +
                 if (Prefs.enabled(this@MainActivity)) "enabled" else "paused")
-            append("• Shizuku: $shizuku")
+            appendLine("• Shizuku: $shizuku")
+            append("• Detection: " + when (RedirectService.detectionMode) {
+                "shizuku-listener" -> "Shizuku task listener"
+                "shizuku-poke-only" -> "Shizuku task check (triggered by accessibility)"
+                else -> "accessibility"
+            })
+            if (FlagGuard.isRunning) append("\n• Flag guard: running")
         }
         logView.text = DebugLog.dump()
     }
@@ -254,44 +271,76 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun pauseRedirect() {
+        Prefs.setEnabled(this, false)
+        findViewById<SwitchCompat>(R.id.enabled).isChecked = false
+    }
+
     /**
-     * SystemUI writes sem_task_bar_available=0 when the default home changes, and One UI Home
-     * probably only reads it when its taskbar starts up. Force the flag, then restart One UI Home
-     * (SystemUI rebinds its Recents/taskbar service right away) so it re-reads the flag.
+     * Rebind experiment (#2). SystemUI writes sem_task_bar_available=0 when the default home
+     * changes, and One UI Home probably reads it only when SystemUI (re)binds its taskbar service.
+     * So: guard the flags from inside the app (instant revert), switch home, then restart One UI
+     * Home so SystemUI rebinds it while the flags already read 1.
      */
-    private fun forceAndRestartHome() {
+    private fun rebindTest() {
         if (!ShizukuShell.hasPermission()) return toast("Connect Shizuku first")
+        val target = Prefs.target(this) ?: return toast("Choose your launcher first")
+        if (samsungHomeComponent() == null) return toast("Couldn't find One UI Home")
+        pauseRedirect()
+        ShizukuShell.exec("pm grant $packageName android.permission.WRITE_SECURE_SETTINGS") { grantOut ->
+            if (grantOut.isNotBlank()) DebugLog.add("grant: $grantOut")
+            FlagGuard.start(this, 90_000)
+            val cmd = """
+                show() { dumpsys settings 2>/dev/null | grep -E "name:(sem_task_bar_available|task_bar|settings_task_bar_enabled) " | sed -E 's/^ *//'; }
+                settings put system settings_task_bar_enabled 1
+                cmd package set-home-activity --user 0 ${target.flattenToString()}
+                echo "default home: ${'$'}(cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME | tail -1)"
+                sleep 1
+                echo "--- flags after home switch:"
+                show
+                am force-stop ${RedirectService.SAMSUNG_HOME}
+                echo "--- One UI Home force-stopped at ${'$'}(date +%T)"
+                sleep 3
+                echo "One UI Home running again: ${'$'}(pidof ${RedirectService.SAMSUNG_HOME} >/dev/null && echo yes || echo no)"
+                dumpsys activity service com.android.systemui 2>/dev/null | grep -i -m3 -E "overviewproxy|TouchInteractionService|isConnected" 
+                echo "--- flags now:"
+                show
+            """.trimIndent()
+            toast("Rebind test: open an app and look for the taskbar (guard runs 90s)")
+            ShizukuShell.exec(cmd) { out ->
+                DebugLog.add("rebind test:\n$out")
+                refresh()
+                toast("Rebind test set up. Check the taskbar, try gestures, then Copy the log.")
+            }
+        }
+    }
+
+    /**
+     * Native mode with NO flag changes, to find out whether swipe gestures break because of a
+     * non-Samsung default home or because of our earlier taskbar flag hacks.
+     */
+    private fun gestureCheck() {
+        if (!ShizukuShell.hasPermission()) return toast("Connect Shizuku first")
+        val target = Prefs.target(this) ?: return toast("Choose your launcher first")
+        if (samsungHomeComponent() == null) return toast("Couldn't find One UI Home")
+        pauseRedirect()
+        FlagGuard.stop(this)
         val cmd = """
-            show() { dumpsys settings 2>/dev/null | grep -E "name:sem_task_bar_available " | sed -E 's/^ *//'; }
+            cmd package set-home-activity --user 0 ${target.flattenToString()}
             echo "default home: ${'$'}(cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME | tail -1)"
-            settings put global sem_task_bar_available 1
-            settings put global task_bar 1
-            am force-stop ${RedirectService.SAMSUNG_HOME}
-            echo "--- One UI Home restarted; watching the flag for 20s (open an app now)"
-            i=0
-            while [ ${'$'}i -lt 20 ]; do
-              v=${'$'}(settings get global sem_task_bar_available)
-              if [ "${'$'}v" != "1" ]; then
-                echo "t=${'$'}{i}s reset to ${'$'}v -> forcing 1"
-                settings put global sem_task_bar_available 1
-              fi
-              sleep 1
-              i=${'$'}((i+1))
-            done
-            echo "One UI Home running: ${'$'}(pidof ${RedirectService.SAMSUNG_HOME} >/dev/null && echo yes || echo no)"
-            show
+            echo "navigation mode: ${'$'}(settings get secure navigation_mode)  (2 = gestures)"
         """.trimIndent()
-        toast("Restarting One UI Home: open an app and pull up the taskbar")
         ShizukuShell.exec(cmd) { out ->
-            DebugLog.add("force + restart:\n$out")
+            DebugLog.add("gesture check:\n$out")
             refresh()
-            toast("Test finished. Copy the log.")
+            toast("Your launcher is default, flags untouched. Try swiping home/back/recents, then Restore.")
         }
     }
 
     private fun restoreSamsungHome() {
         if (!ShizukuShell.hasPermission()) return toast("Connect Shizuku first")
         val home = samsungHomeComponent() ?: return toast("Couldn't find One UI Home")
+        FlagGuard.stop(this)
         val cmd = """
             cmd package set-home-activity --user 0 ${home.flattenToString()}
             cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME | tail -1

@@ -30,13 +30,19 @@ Turn on **Log One UI window events**, swipe home a few times and open Recents, t
 
 **Probe hidden taskbar settings** (Shizuku) lists system settings that mention the taskbar, in case Samsung left a switch that turns it on for any launcher.
 
+## Shizuku detection (v0.8.0)
+
+With Shizuku connected, **Detect home with Shizuku** (on by default) replaces accessibility polling with a task-stack listener running in the Shizuku shell process. It redirects only once One UI Home's task is on top *and* the app you swiped away from is no longer visible, which is exactly when the swipe-home gesture has finished. If it bounces back anyway, it relaunches your launcher (up to 2 times). If Shizuku stops, it falls back to accessibility detection on its own. The status line shows which detection is active.
+
 ## Native mode (experiment)
 
 With Shizuku, **Try native mode** sets your launcher as the real default home app and forces Samsung's taskbar flags (`global task_bar`, `global sem_task_bar_available`, `system settings_task_bar_enabled`). If the taskbar survives, no redirect is needed. **Restore One UI Home** undoes it.
 
+- **Rebind test** guards the taskbar flags from inside the app (reverts SystemUI's write within milliseconds), switches home, then restarts One UI Home so SystemUI rebinds its taskbar service while the flags read 1.
+- **Gesture check** makes your launcher the default without touching any flags, to see whether swipe gestures still work with a third-party default home.
+
 ## Roadmap
 
-- Shizuku-powered foreground detection (task-stack listener) for a faster, flash-free redirect
 - Per-display option (main screen only / cover screen only)
 - Fallbacks: Samsung's hidden taskbar setting, our own floating taskbar, LSPosed module (root)
 

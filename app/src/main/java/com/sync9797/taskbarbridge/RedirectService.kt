@@ -11,12 +11,19 @@ import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import rikka.shizuku.Shizuku
 
 /**
  * Keeps One UI Home as the system default (so Samsung's taskbar stays alive) and
  * bounces the user to their chosen launcher whenever the One UI home screen appears.
  *
- * Detection uses only the event's window class (no view-tree walk), which is what
+ * Two ways to detect the home screen:
+ * - Shizuku (preferred): a task-stack listener in the shell process tells us when One UI
+ *   Home's task is on top AND the previous app is no longer visible, i.e. the swipe-home
+ *   gesture has really finished. No guessing, no polling of accessibility windows.
+ * - Accessibility (fallback): window events plus settle polling, below.
+ *
+ * Accessibility detection uses only the event's window class (no view-tree walk), which is what
  * makes the redirect fast. Observed on One UI 9 / Fold 5:
  *   home screen -> com.sec.android.app.launcher.Launcher
  *   Recents     -> com.android.quickstep.RecentsActivity
@@ -51,6 +58,15 @@ class RedirectService : AccessibilityService() {
         @Volatile
         var isRunning = false
             private set
+
+        /** "accessibility", "shizuku-listener" or "shizuku-poke-only"; shown on the main screen. */
+        @Volatile
+        var detectionMode = "accessibility"
+            private set
+
+        @Volatile
+        var instance: RedirectService? = null
+            private set
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -61,14 +77,158 @@ class RedirectService : AccessibilityService() {
 
     override fun onServiceConnected() {
         isRunning = true
+        instance = this
         DebugLog.add("Redirect service connected")
+        Shizuku.addBinderReceivedListenerSticky(shizukuReceived)
+        Shizuku.addBinderDeadListener(shizukuDead)
+        ShizukuShell.disconnectListeners.add(shellDisconnected)
     }
 
     override fun onDestroy() {
         isRunning = false
+        instance = null
+        Shizuku.removeBinderReceivedListener(shizukuReceived)
+        Shizuku.removeBinderDeadListener(shizukuDead)
+        ShizukuShell.disconnectListeners.remove(shellDisconnected)
+        if (taskMode != null) ShizukuShell.stopTaskWatch()
+        taskMode = null
+        detectionMode = "accessibility"
         DebugLog.add("Redirect service destroyed")
         super.onDestroy()
     }
+
+    // ---------------------------------------------------------------- Shizuku task watch
+
+    /** null = accessibility detection; otherwise the mode the shell watcher reported. */
+    private var taskMode: String? = null
+    private var starting = false
+    private var topPkg: String? = null
+    /** Last ordinary app on top, i.e. the app the user swiped away from. */
+    private var lastAppPkg: String? = null
+    private var redirectedFrom: String? = null
+    private var bounceUntil = 0L
+    private var bounceAttempts = 0
+
+    private val watcherCb = object : ITaskWatcher.Stub() {
+        override fun onTopTask(taskId: Int, displayId: Int, topComponent: String, othersVisible: String) {
+            handler.post { onTopTask(taskId, displayId, topComponent, othersVisible) }
+        }
+
+        override fun onLog(msg: String) = DebugLog.add(msg)
+    }
+
+    private val shizukuReceived = Shizuku.OnBinderReceivedListener { handler.post { startTaskWatch() } }
+    private val shizukuDead = Shizuku.OnBinderDeadListener { handler.post { taskWatchLost("Shizuku stopped") } }
+    private val shellDisconnected: () -> Unit = {
+        taskWatchLost("shell process died")
+        handler.postDelayed({ startTaskWatch() }, 1_000)
+    }
+
+    /** Called by the main screen when the detection switch or Shizuku permission changes. */
+    fun reconfigure() {
+        if (Prefs.shizukuDetection(this)) startTaskWatch() else {
+            if (taskMode != null) ShizukuShell.stopTaskWatch()
+            taskWatchLost("turned off")
+        }
+    }
+
+    private fun startTaskWatch() {
+        if (taskMode != null || starting) return
+        if (!Prefs.shizukuDetection(this) || !ShizukuShell.hasPermission()) return
+        starting = true
+        ShizukuShell.startTaskWatch(watcherCb) cb@{ mode ->
+            starting = false
+            if (mode.startsWith("error")) {
+                log("Shizuku task watch unavailable ($mode); using accessibility")
+                return@cb
+            }
+            taskMode = mode
+            detectionMode = "shizuku-$mode"
+            stopPoll()
+            stopWatch()
+            log("Detection: Shizuku task watch ($mode)")
+        }
+    }
+
+    private fun taskWatchLost(why: String) {
+        if (taskMode == null) return
+        taskMode = null
+        detectionMode = "accessibility"
+        log("Shizuku task watch stopped ($why); using accessibility")
+    }
+
+    private fun onTopTask(taskId: Int, displayId: Int, comp: String, others: String) {
+        if (taskMode == null) return
+        val cn = ComponentName.unflattenFromString(comp)
+        val pkg = cn?.packageName ?: return
+        val cls = cn.className
+        val diag = Prefs.diagnostics(this)
+        if (diag) log("task top=$comp #$taskId d$displayId visible=[$others]")
+        topPkg = pkg
+        val target = Prefs.target(this)
+        val now = SystemClock.elapsedRealtime()
+
+        if (pkg != SAMSUNG_HOME) {
+            pending?.let(handler::removeCallbacks)
+            pending = null
+            if (target != null && pkg == target.packageName) {
+                if (diag && now < bounceUntil) log("landed on $pkg")
+                return
+            }
+            if (target != null && now < bounceUntil && pkg == redirectedFrom) {
+                if (bounceAttempts >= BOUNCE_MAX_RETRIES) {
+                    log("bounced back to $pkg again; giving up")
+                    bounceUntil = 0
+                } else {
+                    bounceAttempts++
+                    log("bounced back to $pkg -> retry #$bounceAttempts")
+                    lastRedirectAt = now
+                    launch(target, displayId, -1)
+                }
+                return
+            }
+            bounceUntil = 0
+            if (pkg != packageName) lastAppPkg = pkg
+            return
+        }
+
+        // One UI Home is on top.
+        if (cls.contains(RECENTS_HINT)) {
+            if (diag) log("skip: Recents")
+            return
+        }
+        if (!isHomeClass(cls)) {
+            if (diag) log("skip: other One UI activity ($cls)")
+            return
+        }
+        if (others.isNotEmpty()) {
+            // Swipe-home animation still running: the app we came from is still on screen.
+            if (diag) log("waiting: $others still visible")
+            return
+        }
+        if (!Prefs.enabled(this) || target == null) return
+        if (now - lastRedirectAt < COOLDOWN_MS) {
+            if (diag) log("skip: cooldown")
+            return
+        }
+        pending?.let(handler::removeCallbacks)
+        val go = Runnable {
+            pending = null
+            if (topPkg != SAMSUNG_HOME) return@Runnable // user left home during the delay
+            redirectedFrom = lastAppPkg
+            if (maybeRedirect(target, displayId, -1L, watchBounce = false)) {
+                bounceUntil = SystemClock.elapsedRealtime() + BOUNCE_WATCH_MS
+                bounceAttempts = 0
+            }
+        }
+        val extra = Prefs.delayMs(this)
+        if (extra <= 0L) go.run() else {
+            pending = go
+            handler.postDelayed(go, extra)
+        }
+    }
+
+    // ---------------------------------------------------------------- accessibility detection
 
     override fun onInterrupt() = Unit
 
@@ -76,6 +236,11 @@ class RedirectService : AccessibilityService() {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = event.packageName?.toString() ?: return
         if (pkg != SAMSUNG_HOME) return
+        if (taskMode != null) {
+            // The shell watcher decides; a window event is just a hint to look again.
+            ShizukuShell.pokeTaskWatch()
+            return
+        }
         val cls = event.className?.toString().orEmpty()
         val displayId = event.displayId
         val diag = Prefs.diagnostics(this)
@@ -239,12 +404,18 @@ class RedirectService : AccessibilityService() {
     private fun isHomeClass(cls: String) =
         cls == HOME_CLASS || HOME_CLASS_FALLBACKS.any { cls.endsWith(it) }
 
-    private fun maybeRedirect(target: ComponentName, displayId: Int, eventTime: Long) {
+    /** Returns true if it launched the target. [eventTime] < 0 means "no event latency to log". */
+    private fun maybeRedirect(
+        target: ComponentName,
+        displayId: Int,
+        eventTime: Long,
+        watchBounce: Boolean = true,
+    ): Boolean {
         val now = SystemClock.elapsedRealtime()
-        if (now < pausedUntil) return
+        if (now < pausedUntil) return false
 
         val keyguard = getSystemService(KeyguardManager::class.java)
-        if (keyguard?.isKeyguardLocked == true) return
+        if (keyguard?.isKeyguardLocked == true) return false
 
         // Loop guard.
         while (launchTimes.isNotEmpty() && now - launchTimes.first() > LOOP_WINDOW_MS) launchTimes.removeFirst()
@@ -252,17 +423,18 @@ class RedirectService : AccessibilityService() {
             pausedUntil = now + LOOP_PAUSE_MS
             launchTimes.clear()
             log("loop guard: pausing redirects for ${LOOP_PAUSE_MS / 1000}s")
-            return
+            return false
         }
         launchTimes.addLast(now)
         lastRedirectAt = now
-        launch(target, displayId, SystemClock.uptimeMillis() - eventTime)
-        watchForBounce(target, displayId, previousApps, attempt = 1)
+        launch(target, displayId, if (eventTime < 0) 0 else SystemClock.uptimeMillis() - eventTime)
+        if (watchBounce) watchForBounce(target, displayId, previousApps, attempt = 1)
 
         if (Prefs.diagnostics(this)) {
             // Logged after launching so it never slows the redirect down.
             handler.post { rootInActiveWindow?.let { log("ids: " + collectIds(it, 25).joinToString(", ")) } }
         }
+        return true
     }
 
     private fun launch(target: ComponentName, displayId: Int, latencyMs: Long) {

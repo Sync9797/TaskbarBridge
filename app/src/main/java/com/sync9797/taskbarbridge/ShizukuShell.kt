@@ -15,10 +15,15 @@ object ShizukuShell {
 
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    // Separate thread so long-running shell commands never delay task-watch calls.
+    private val taskWorker = Executors.newSingleThreadExecutor()
 
     @Volatile
     private var service: IShellService? = null
     private val waiting = mutableListOf<(IShellService?) -> Unit>()
+
+    /** Called on the main thread when the shell process dies (Shizuku stopped, app updated…). */
+    val disconnectListeners = mutableListOf<() -> Unit>()
 
     private val args by lazy {
         Shizuku.UserServiceArgs(
@@ -39,6 +44,7 @@ object ShizukuShell {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             service = null
+            main.post { disconnectListeners.toList().forEach { it() } }
         }
     }
 
@@ -78,5 +84,29 @@ object ShizukuShell {
                 main.post { onResult(out) }
             }
         }
+    }
+
+    /** Starts the task-stack watcher in the shell process; [onResult] gets the mode on the main thread. */
+    fun startTaskWatch(cb: ITaskWatcher, onResult: (String) -> Unit) {
+        withService { s ->
+            if (s == null) {
+                main.post { onResult("error: Shizuku is not running or permission was not granted") }
+                return@withService
+            }
+            taskWorker.execute {
+                val mode = try { s.startTaskWatch(cb) } catch (e: Throwable) { "error: ${e.message}" }
+                main.post { onResult(mode) }
+            }
+        }
+    }
+
+    fun stopTaskWatch() {
+        val s = service ?: return
+        taskWorker.execute { try { s.stopTaskWatch() } catch (_: Throwable) {} }
+    }
+
+    fun pokeTaskWatch() {
+        val s = service ?: return
+        taskWorker.execute { try { s.pokeTaskWatch() } catch (_: Throwable) {} }
     }
 }

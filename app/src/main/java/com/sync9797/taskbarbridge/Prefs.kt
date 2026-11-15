@@ -11,6 +11,7 @@ object Prefs {
     private const val KEY_DELAY = "delay_ms"
     private const val KEY_DIAGNOSTICS = "diagnostics"
     private const val KEY_SAMSUNG_HOME = "samsung_home"
+    private const val KEY_SHIZUKU_DETECTION = "shizuku_detection"
 
     const val DEFAULT_DELAY_MS = 0L
 
@@ -31,6 +32,10 @@ object Prefs {
 
     fun diagnostics(ctx: Context) = sp(ctx).getBoolean(KEY_DIAGNOSTICS, false)
     fun setDiagnostics(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(KEY_DIAGNOSTICS, v).apply()
+
+    /** Use the Shizuku task-stack watcher instead of accessibility window polling when Shizuku is available. */
+    fun shizukuDetection(ctx: Context) = sp(ctx).getBoolean(KEY_SHIZUKU_DETECTION, true)
+    fun setShizukuDetection(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(KEY_SHIZUKU_DETECTION, v).apply()
 
     /** One UI Home's own home activity, remembered so native mode can be undone. */
     fun samsungHome(ctx: Context): ComponentName? =

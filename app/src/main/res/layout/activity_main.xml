@@ -74,6 +74,13 @@
             android:layout_height="wrap_content"
             android:text="Turn on service automatically" />
 
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/shizuku_detection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Detect home with Shizuku (faster, no bounce)" />
+
         <Button
             android:id="@+id/probe"
             android:layout_width="match_parent"
@@ -102,7 +109,13 @@
             android:id="@+id/native_restart"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Native test 2: force flag + restart One UI Home" />
+            android:text="Rebind test: guard flags + restart One UI Home" />
+
+        <Button
+            android:id="@+id/native_gesture"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Gesture check: my launcher as default, no flag changes" />
 
         <Button
             android:id="@+id/native_restore"

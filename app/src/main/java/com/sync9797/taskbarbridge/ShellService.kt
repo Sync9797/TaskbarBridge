@@ -8,7 +8,10 @@ import kotlin.system.exitProcess
  */
 class ShellService : IShellService.Stub() {
 
+    private var watcher: TaskWatcher? = null
+
     override fun destroy() {
+        watcher?.stop()
         exitProcess(0)
     }
 
@@ -23,5 +26,32 @@ class ShellService : IShellService.Stub() {
         } catch (e: Exception) {
             "error: ${e.javaClass.simpleName}: ${e.message}"
         }
+    }
+
+    @Synchronized
+    override fun startTaskWatch(cb: ITaskWatcher): String {
+        watcher?.stop()
+        val w = TaskWatcher(cb)
+        val mode = try {
+            w.start()
+        } catch (e: Throwable) {
+            "error: ${e.javaClass.simpleName}: ${e.message}"
+        }
+        watcher = if (mode.startsWith("error")) {
+            w.stop(); null
+        } else {
+            w
+        }
+        return mode
+    }
+
+    @Synchronized
+    override fun stopTaskWatch() {
+        watcher?.stop()
+        watcher = null
+    }
+
+    override fun pokeTaskWatch() {
+        watcher?.poke()
     }
 }
